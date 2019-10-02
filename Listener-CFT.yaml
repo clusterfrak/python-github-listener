@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: 2010-09-09
+# Provide Description of what this CloudFormation Template is going to do
+Description: AWS CloudFormation Template to create a Fargate task definition for CloudMage Something Listener
+
+# Define parameters that will selectable at launch time
+Parameters:
+  ServiceName:
+    Description: The name of the service being launched
+    Type: String
+    Default: "aws-nuke"
+    AllowedPattern: "[a-z0-9-]*"
+  
+  ECSClusterName:
+    Description: Type the name that you would like to assign to your Fargate Cluster 
+    Type: String
+    Default: Fargate
+  
+  VCPU:
+    Description: Amount of CPU resources to be assigned to the ECS Fargate Task.
+    Type: String
+    Default: "512"
+    ConstraintDescription: Must be a valid Fargate CPU value
+    AllowedValues: 
+      - "256"
+      - "512"
+      - "1024"
+      - "2048"
+      - "4096"
+  
+  VRAM:
+    Description: Amount of memory resources to be assigned to the ECS Fargate Task.
+    Type: String
+    Default: "1024"
+    ConstraintDescription: Must be a valid Fargate Memory value
+    AllowedValues: 
+      - "512"
+      - "1024"
+      - "2048"
+      - "4096"
+      - "8192"
+  
+  ApplicationPort:
+    Description: TCP Port that will be used to reach the Fargate task.
+    Type: Number
+    MinValue: 1024
+    MaxValue: 65535
+    Default: 8080
+  
+  AssignPublicIP:
+    Description: Parameter to define if a public IP will be assigned to the task when launched
+    Type: String
+    Default: "ENABLED"
+    ConstraintDescription: Must be set to either ENABLED or DISABLED
+    AllowedValues: 
+      - "ENABLED"
+      - "DISABLED"
+
+  VpcId:
+    Description: VPC ID that this stack will be launched in.
+    Type: AWS::EC2::VPC::Id
+    AllowedPattern: "[a-z0-9-]*"
+  
+  SubnetId:
+    Description: VPC Subnet that this stack will be launched in.
+    Type: AWS::EC2::Subnet::Id
+    AllowedPattern: "[a-z0-9-]*"
+
+  SSHLocation:
+    Description: The source IP address (/32) or source IP address range (x.x.x.x/x) that will be allowed to SSH to the EC2 instances
+    Type: String
+    MinLength: 9
+    MaxLength: 18
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: Must be a valid IP CIDR range of the form x.x.x.x/x
+
+Resources:
+  # ================================
+  # Fargate ECS Cluster
+  # ================================
+  FargateCluster:
+    Type: "AWS::ECS::Cluster"
+    Properties:
+      ClusterName: "CloudMage"
+
+  # ================================
+  # Fargate Task Definition
+  # ================================
+  TaskDefinition: 
+    Type: "AWS::ECS::TaskDefinition"
+    Properties: 
+      RequiresCompatibilities:
+        - "EC2"
+        - "FARGATE"
+      ExecutionRoleArn:
+        Fn::GetAtt: [ ECSTaskExecutionRole, Arn ]
+      TaskRoleArn:
+        Fn::GetAtt: [ ECSTaskRole, Arn ]
+      NetworkMode: "awsvpc"
+      Cpu: 
+        Ref: VCPU
+      Memory:
+        Ref: VRAM
+      ContainerDefinitions: 
+        - 
+          Name: "aws-nuke"
+          Image: "appcontainers/aws-nuke:latest"
+          PortMappings: 
+          - 
+            ContainerPort: 
+              Ref: ApplicationPort
+            HostPort: 
+              Ref: ApplicationPort
+          EntryPoint: 
+            - "/bin/bash"
+            - "-c"
+          Command: 
+            - "/usr/sbin/sshd", "-D"
+          Essential: "true"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref FargateLoggingGroup
+              awslogs-region: "us-east-1"
+              awslogs-stream-prefix: "aws-nuke"
+  
+  # ================================
+  # Fargate Task Service
+  # ================================
+  Service: 
+    Type: AWS::ECS::Service
+    Properties: 
+      Cluster: !Ref FargateCluster
+      ServiceName: "CloudMage"
+      LaunchType: FARGATE
+      DesiredCount: 1
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration: 
+        AwsvpcConfiguration:
+          AssignPublicIp: !Ref AssignPublicIP
+          SecurityGroups: 
+            - !Ref CloudMageSG
+          Subnets:
+            - !Ref SubnetId
+
+  # ================================
+  # ECS Task Execution Role
+  # ================================
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      ManagedPolicyArns: 
+        - "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ecs.amazonaws.com
+            - ecs-tasks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+
+
+  # ================================
+  # Fargate Task Execution Role
+  # ================================
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonESReadOnlyAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+              - ecs.amazonaws.com
+              - ecs-tasks.amazonaws.com
+          Action:
+            - sts:AssumeRole
+
+  # ================================
+  # Fargate Security Group
+  # ================================
+  # Define the Security Group that will be appended to the ENI of the Instance we are creating.  
+  CloudMageSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group that will be used for the webhook listener. Open port 80/443
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 13175
+          ToPort: 13175
+          CidrIp: "0.0.0.0/0"
+  # TODO: Make some SSL Goodness
+
+  # ================================
+  # Fargate CloudWatch Log Group
+  # ================================
+  FargateLoggingGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties: 
+      LogGroupName: Fargate-Logs
+      RetentionInDays: 14
