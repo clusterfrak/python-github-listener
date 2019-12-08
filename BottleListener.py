@@ -53,10 +53,12 @@ def MergeRequest():
       pr_number = request.forms.get('number')
       print(pr_number)
 
+    # This should return back as an object
     if 'changes' in request.forms:
       pr_change_obj = request.forms.get('changes')
       print(pr_change_obj)
 
+    # This should also return back as an object
     if 'pull_request' in request.forms:
       pr_obj = request.forms.get('pull_request')
       print(pr_obj)
